@@ -1,0 +1,8 @@
+nodes: [A, B, C, D, E]
+edges:
+  - {from: A, to: B, cost: 1}
+  - {from: A, to: C, cost: 4}
+  - {from: B, to: C, cost: 1}
+  - {from: B, to: D, cost: 5}
+  - {from: C, to: D, cost: 1}
+  - {from: D, to: E, cost: 2}
