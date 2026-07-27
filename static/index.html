@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Routing Protocol Simulator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+<style>
+  :root { --bg:#0f1420; --panel:#1a2130; --accent:#4f8cff; --text:#e6ebf5; --muted:#8b95a8; --edge:#5b6472; }
+  * { box-sizing: border-box; font-family: -apple-system, system-ui, sans-serif; }
+  body { margin:0; background:var(--bg); color:var(--text); }
+  header { padding:20px 28px; border-bottom:1px solid #232c3d; }
+  header h1 { margin:0; font-size:22px; letter-spacing:0.3px; }
+  header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+  .layout { display:flex; height:calc(100vh - 78px); }
+  #cy { flex:1; background:var(--bg); }
+  .sidebar { width:340px; background:var(--panel); border-left:1px solid #232c3d;
+             padding:20px; overflow-y:auto; }
+  .group { margin-bottom:22px; }
+  .group h3 { font-size:12px; text-transform:uppercase; letter-spacing:1px;
+              color:var(--muted); margin:0 0 10px; }
+  button, select, input { font-size:13px; }
+  button { background:var(--accent); color:white; border:none; padding:8px 12px;
+           border-radius:6px; cursor:pointer; margin:3px 0; width:100%; }
+  button.secondary { background:#2a3346; }
+  select, input { background:#0f1420; color:var(--text); border:1px solid #2a3346;
+                  border-radius:6px; padding:7px; width:100%; margin:3px 0; }
+  .row { display:flex; gap:6px; }
+  .row > * { flex:1; }
+  .toggle { display:flex; background:#0f1420; border-radius:6px; padding:3px; margin:3px 0; }
+  .toggle button { background:transparent; margin:0; }
+  .toggle button.active { background:var(--accent); }
+  table { width:100%; border-collapse:collapse; font-size:12px; margin-top:6px; }
+  th,td { text-align:left; padding:4px 6px; border-bottom:1px solid #232c3d; }
+  th { color:var(--muted); font-weight:600; }
+  #status { font-size:12px; color:var(--muted); min-height:16px; margin-top:6px; }
+  .err { color:#ff6b6b; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Routing Protocol Simulator</h1>
+  <p>Link-state (Dijkstra) &amp; distance-vector (Bellman-Ford) routing, with live recalculation</p>
+</header>
+
+<div class="layout">
+  <div id="cy"></div>
+  <div class="sidebar">
+
+    <div class="group">
+      <h3>Topology</h3>
+      <select id="preloaded"><option value="">Select preloaded…</option></select>
+      <button onclick="loadPreloaded()">Load preloaded</button>
+      <input type="file" id="fileInput" accept=".yaml,.yml">
+      <button class="secondary" onclick="uploadFile()">Upload topology</button>
+    </div>
+
+    <div class="group">
+      <h3>Protocol</h3>
+      <div class="toggle" id="protoToggle">
+        <button class="active" data-p="ls" onclick="setProto('ls')">Link-State</button>
+        <button data-p="dv" onclick="setProto('dv')">Distance-Vector</button>
+      </div>
+      <div class="toggle" id="shToggle" style="display:none">
+        <button class="active" data-s="off" onclick="setSH(false)">Split-Horizon Off</button>
+        <button data-s="on" onclick="setSH(true)">On</button>
+      </div>
+      <button onclick="simulate()">Simulate</button>
+    </div>
+
+    <div class="group">
+      <h3>Modify</h3>
+      <div class="row">
+        <input id="failU" placeholder="u"><input id="failV" placeholder="v">
+      </div>
+      <button class="secondary" onclick="failLink()">Fail link</button>
+      <div class="row">
+        <input id="costU" placeholder="u"><input id="costV" placeholder="v">
+        <input id="costW" placeholder="cost" type="number">
+      </div>
+      <button class="secondary" onclick="changeCost()">Change cost</button>
+      <button class="secondary" onclick="reload()">Reset topology</button>
+    </div>
+
+    <div class="group">
+      <h3>Trace Packet</h3>
+      <div class="row">
+        <input id="traceS" placeholder="src"><input id="traceD" placeholder="dst">
+      </div>
+      <button class="secondary" onclick="tracePath()">Trace</button>
+    </div>
+
+    <div id="status"></div>
+    <div class="group"><h3>Routing Tables</h3><div id="tables"></div></div>
+  </div>
+</div>
+
+<script>
+let cy, currentTopo = null, proto = "ls", splitHorizon = false;
+
+function status(msg, err=false){ const s=document.getElementById("status");
+  s.textContent = msg; s.className = err ? "err" : ""; }
+
+async function api(path, opts){
+  const r = await fetch("/api/"+path, opts);
+  if(!r.ok){ const e = await r.json().catch(()=>({detail:r.statusText}));
+    throw new Error(e.detail || "Request failed"); }
+  return r.json();
+}
+
+function initCy(){
+  cy = cytoscape({ container: document.getElementById("cy"),
+    style:[
+      {selector:"node",style:{"background-color":"#4f8cff","label":"data(id)",
+        "color":"#fff","text-valign":"center","text-halign":"center",
+        "font-size":"14px","width":40,"height":40}},
+      {selector:"edge",style:{"line-color":"#5b6472","width":2,
+        "label":"data(cost)","font-size":"11px","color":"#8b95a8",
+        "text-background-color":"#0f1420","text-background-opacity":1,
+        "text-background-padding":"2px"}},
+      {selector:".path",style:{"line-color":"#4f8cff","width":4}},
+      {selector:".pathnode",style:{"background-color":"#ffb454"}}
+    ],
+    layout:{name:"cose",animate:true}
+  });
+}
+
+function render(data){
+  const els = [];
+  data.graph.nodes.forEach(n=>els.push({data:{id:n.id}}));
+  data.graph.edges.forEach(e=>els.push({data:{
+    id:e.source+"-"+e.target, source:e.source, target:e.target, cost:e.cost}}));
+  cy.elements().remove();
+  cy.add(els);
+  cy.layout({name:"cose",animate:true}).run();
+  renderTables(data.tables);
+}
+
+function renderTables(tables){
+  const div = document.getElementById("tables");
+  if(!tables || !Object.keys(tables).length){ div.innerHTML=""; return; }
+  let html = "";
+  for(const [router, t] of Object.entries(tables)){
+    html += `<b>Router ${router}</b><table><tr><th>Dest</th><th>Next hop</th></tr>`;
+    for(const [dest, hop] of Object.entries(t))
+      html += `<tr><td>${dest}</td><td>${hop}</td></tr>`;
+    html += "</table>";
+  }
+  div.innerHTML = html;
+}
+
+async function loadTopologyList(){
+  const names = await api("topologies");
+  const sel = document.getElementById("preloaded");
+  names.forEach(n=>{ const o=document.createElement("option");
+    o.value=n; o.textContent=n; sel.appendChild(o); });
+}
+
+async function loadPreloaded(){
+  const name = document.getElementById("preloaded").value;
+  if(!name) return status("Pick a topology", true);
+  try{ currentTopo={type:"pre",name};
+    render(await api("load/preloaded/"+name,{method:"POST"}));
+    status("Loaded "+name);
+  }catch(e){ status(e.message,true); }
+}
+
+async function uploadFile(){
+  const f = document.getElementById("fileInput").files[0];
+  if(!f) return status("Choose a file", true);
+  const fd = new FormData(); fd.append("file",f);
+  try{ currentTopo={type:"file",file:f};
+    render(await api("load/upload",{method:"POST",body:fd}));
+    status("Loaded "+f.name);
+  }catch(e){ status(e.message,true); }
+}
+
+async function reload(){
+  if(!currentTopo) return status("Nothing to reset", true);
+  if(currentTopo.type==="pre") return loadPreloaded();
+  document.getElementById("fileInput").files.length && uploadFile();
+}
+
+function setProto(p){ proto=p;
+  document.querySelectorAll("#protoToggle button").forEach(b=>
+    b.classList.toggle("active", b.dataset.p===p));
+  document.getElementById("shToggle").style.display = p==="dv"?"flex":"none";
+}
+function setSH(v){ splitHorizon=v;
+  document.querySelectorAll("#shToggle button").forEach(b=>
+    b.classList.toggle("active", (b.dataset.s==="on")===v));
+}
+
+async function simulate(){
+  try{
+    if(proto==="dv"){
+      const r = await api("distance-vector?split_horizon="+splitHorizon);
+      status(`Distance-vector converged in ${r.rounds} rounds`);
+      // show DV costs as tables
+      const t={}; for(const[n,v] of Object.entries(r.vectors)) t[n]=v;
+      renderDVTables(r.vectors);
+    } else {
+      // link-state: reload current to recompute forwarding tables
+      const d = currentTopo.type==="pre"
+        ? await api("load/preloaded/"+currentTopo.name,{method:"POST"})
+        : null;
+      if(d){ render(d); status("Link-state routing tables computed"); }
+    }
+  }catch(e){ status(e.message,true); }
+}
+
+function renderDVTables(vectors){
+  const div=document.getElementById("tables"); let html="";
+  for(const[router,v] of Object.entries(vectors)){
+    html+=`<b>Router ${router}</b><table><tr><th>Dest</th><th>Cost</th></tr>`;
+    for(const[dest,cost] of Object.entries(v))
+      html+=`<tr><td>${dest}</td><td>${cost===null||cost>1e9?"∞":cost}</td></tr>`;
+    html+="</table>";
+  }
+  div.innerHTML=html;
+}
+
+async function failLink(){
+  const u=failU.value, v=failV.value;
+  if(!u||!v) return status("Enter u and v", true);
+  try{ render(await api("fail-link",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({u,v})}));
+    status(`Link ${u}-${v} failed, routes recomputed`);
+  }catch(e){ status(e.message,true); }
+}
+
+async function changeCost(){
+  const u=costU.value,v=costV.value,cost=parseInt(costW.value);
+  if(!u||!v||isNaN(cost)) return status("Enter u, v and cost", true);
+  try{ render(await api("change-cost",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({u,v,cost})}));
+    status(`Cost ${u}-${v} set to ${cost}`);
+  }catch(e){ status(e.message,true); }
+}
+
+async function tracePath(){
+  const src=traceS.value,dst=traceD.value;
+  if(!src||!dst) return status("Enter src and dst", true);
+  try{ const r=await api("trace",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({src,dst})});
+    cy.elements().removeClass("path pathnode");
+    if(!r.path){ return status(`No path ${src}→${dst}`, true); }
+    r.path.forEach(n=>cy.$("#"+n).addClass("pathnode"));
+    for(let i=0;i<r.path.length-1;i++){
+      cy.edges().forEach(e=>{
+        const s=e.data("source"),t=e.data("target");
+        if((s===r.path[i]&&t===r.path[i+1])||(t===r.path[i]&&s===r.path[i+1]))
+          e.addClass("path");
+      });
+    }
+    status("Path: "+r.path.join(" → "));
+  }catch(e){ status(e.message,true); }
+}
+
+initCy(); loadTopologyList();
+</script>
+</body>
+</html>
