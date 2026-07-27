@@ -8,8 +8,6 @@ packet path tracing, and a visual demonstration of the classic
 
 > **Live demo:** https://routing-sim.wonderfuldesert-1933bece.uksouth.azurecontainerapps.io/
 
-![Routing Protocol Simulator](docs/screenshot.png)
-
 ## Overview
 
 Every router in a network must decide, for each destination, which neighbour to
