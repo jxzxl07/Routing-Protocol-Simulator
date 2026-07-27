@@ -3,7 +3,7 @@ from engine.graph import Graph
 
 
 def load_topology(source, is_file=True):
-    """Build a Graph from YAML given as a file path or a raw string."""
+    # Build a Graph from YAML given as a file path or a raw string
     if is_file:
         with open(source) as f:
             data = yaml.safe_load(f)
